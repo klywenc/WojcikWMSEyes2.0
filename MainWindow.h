@@ -33,7 +33,6 @@ private slots:
     void handleSerialScan();
     void startNextUpload();
     void onUploadFinished(QNetworkReply *reply);
-
     void updateUploadAnimation();
 
 private:
@@ -44,7 +43,6 @@ private:
     void ensureTmpFolderExists();
 
     QLabel* createCameraLabel(const QString &text);
-
     void drawStatusOnImage(int camIndex, const QPixmap &basePix, QString text, QColor color, bool isAnimated = false);
 
     QWidget *centralWidget;
@@ -81,4 +79,4 @@ private:
     int currentUploadCamIndex;
 };
 
-#endif // MAINWINDOW_H
+#endif

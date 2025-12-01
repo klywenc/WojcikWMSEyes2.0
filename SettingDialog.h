@@ -5,17 +5,23 @@
 #include <QLineEdit>
 #include <QComboBox>
 #include <QSettings>
-#include <QSerialPortInfo>
+#include <QSpinBox>
+#include <QCheckBox>
 #include <vector>
 
 class SettingDialog : public QDialog {
     Q_OBJECT
 public:
     explicit SettingDialog(QWidget *parent = nullptr);
+
     QString getCameraUrl(int index);
-
-
     QString getSelectedScannerPort();
+
+    int getAppWidth();
+    int getAppHeight();
+    bool isFullScreen();
+    QString getServerUrl();
+    int getUploadTimeout();
 
 public slots:
     void saveSettings();
@@ -23,9 +29,16 @@ public slots:
 
 private:
     void setupUi();
-    QSettings settings;
+    QSettings* getSettings();
+
     std::vector<QLineEdit*> cameraInputs;
     QComboBox *scannerSelector;
+
+    QSpinBox *spinWidth;
+    QSpinBox *spinHeight;
+    QCheckBox *checkFullScreen;
+    QLineEdit *editServerUrl;
+    QSpinBox *spinTimeout;
 };
 
 #endif
