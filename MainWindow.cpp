@@ -14,6 +14,7 @@
 #include <QUrlQuery>
 #include <QDebug>
 #include <QPainter>
+#include <QEventLoop>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     this->setObjectName("mainWindow");
@@ -247,69 +248,102 @@ void MainWindow::captureSnapshot() {
     headerTitle->setText("PALETA: " + currentPalletCode);
     QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd-HHmm");
 
-    // Pobierz dane autoryzacyjne i szablon RAZ
     QString user = settingsDialog->getGlobalUser();
     QString pass = settingsDialog->getGlobalPass();
     QString urlTemplate = settingsDialog->getUrlTemplate();
+    int mode = settingsDialog->getProtocolMode(); // 0=HTTP, 1=RTSP
 
-    for(size_t i=0; i<captures.size(); i++) {
-        if(i >= camDisplays.size()) break;
+    for(int i=0; i<5; i++) {
+        QString ip = settingsDialog->getCameraIp(i);
+        if (ip.isEmpty() || ip == "0") continue;
 
-        if(!captures[i].isOpened()) {
-             QString ip = settingsDialog->getCameraIp(i);
-             QString url;
+        QImage capturedImg;
+        bool success = false;
 
-             if(ip == "0") url = "0";
-             else if(ip.contains("://")) url = ip; 
-             else {
-                 url = urlTemplate.arg(user, pass, ip);
-             }
+        // --- MODE 0: HTTP (WGET EMULATION) ---
+        if (mode == 0) {
+            // Zamień %3 na IP (bo %1 i %2 idą w headerze dla HTTP)
+            QString url = urlTemplate;
+            url.replace("%3", ip); // Prosta podmiana, bezpieczna
 
-             if(!ip.isEmpty()) captures[i].open(url.toStdString());
+            qDebug() << "FETCH (HTTP):" << url;
+
+            // Retry logic (2 próby)
+            for(int attempt = 1; attempt <= 2; attempt++) {
+                QNetworkRequest request(url);
+
+                // AUTH HEADER
+                QString concatenated = user + ":" + pass;
+                QByteArray data = concatenated.toLocal8Bit().toBase64();
+                QString headerData = "Basic " + data;
+                request.setRawHeader("Authorization", headerData.toLocal8Bit());
+                request.setTransferTimeout(5000);
+
+                QNetworkReply *reply = netManager->get(request);
+                QEventLoop loop;
+                connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+                loop.exec();
+
+                if (reply->error() == QNetworkReply::NoError) {
+                    QByteArray imgData = reply->readAll();
+                    if (capturedImg.loadFromData(imgData)) {
+                        success = true;
+                        reply->deleteLater();
+                        break;
+                    }
+                } else {
+                    qDebug() << "HTTP Err:" << reply->errorString();
+                }
+                reply->deleteLater();
+            }
         }
+        else {
+            QString url = urlTemplate.arg(user, pass, ip);
+            qDebug() << "FETCH (RTSP):" << ip;
 
-        if(captures[i].isOpened()) {
-            cv::Mat frame;
-            bool success = false;
+            if(!captures[i].isOpened()) captures[i].open(url.toStdString());
 
-            for(int k=0; k<25; k++) {
-                if(captures[i].read(frame) && !frame.empty()) {
-                    success = true;
-                    break;
+            if(captures[i].isOpened()) {
+                cv::Mat frame;
+                for(int k=0; k<15; k++) {
+                    if(captures[i].read(frame) && !frame.empty()) {
+                        cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
+                        capturedImg = QImage((const uchar*)frame.data, frame.cols, frame.rows, frame.step, QImage::Format_RGB888).copy();
+                        success = true;
+                        break;
+                    }
                 }
             }
+        }
 
-            if(success && !frame.empty()) {
-                int rotation = settingsDialog->getCameraRotation(i);
-                if (rotation == 90) cv::rotate(frame, frame, cv::ROTATE_90_CLOCKWISE);
-                else if (rotation == 180) cv::rotate(frame, frame, cv::ROTATE_180);
-                else if (rotation == 270) cv::rotate(frame, frame, cv::ROTATE_90_COUNTERCLOCKWISE);
+        if(success && !capturedImg.isNull()) {
+            int rotation = settingsDialog->getCameraRotation(i);
+            if (rotation != 0) {
+                QTransform trans;
+                trans.rotate(rotation);
+                capturedImg = capturedImg.transformed(trans);
+            }
 
-                cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
-                QImage img((const uchar*)frame.data, frame.cols, frame.rows, frame.step, QImage::Format_RGB888);
+            QString filename = QString("%1_%2_%3.jpg").arg(currentPalletCode).arg(timestamp).arg(i);
+            QString fullPath = QDir("tmp").filePath(filename);
 
-                QString filename = QString("%1_%2_%3.jpg").arg(currentPalletCode).arg(timestamp).arg(i);
-                QString fullPath = QDir("tmp").filePath(filename);
-
-                if(img.save(fullPath, "JPG", 90)) {
-                    QSize labelSize = camDisplays[i]->size();
-                    if(!labelSize.isEmpty()) {
-                        QPixmap pix = QPixmap::fromImage(img);
-                        camDisplays[i]->setPixmap(pix.scaled(labelSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-                    }
-
-                    UploadJob job;
-                    job.filePath = fullPath;
-                    job.palletCode = currentPalletCode;
-                    job.camIndex = (int)i;
-                    uploadQueue.enqueue(job);
+            if(capturedImg.save(fullPath, "JPG", 90)) {
+                QSize labelSize = camDisplays[i]->size();
+                if(!labelSize.isEmpty()) {
+                    QPixmap pix = QPixmap::fromImage(capturedImg);
+                    camDisplays[i]->setPixmap(pix.scaled(labelSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
                 }
-            } else {
-                camDisplays[i]->setText("BŁĄD OBRAZU");
+
+                UploadJob job;
+                job.filePath = fullPath;
+                job.palletCode = currentPalletCode;
+                job.camIndex = i;
+                uploadQueue.enqueue(job);
             }
         } else {
-             camDisplays[i]->setText("BRAK POŁĄCZENIA");
+            camDisplays[i]->setText("BŁĄD OBRAZU\n(Sprawdź IP/Hasło)");
         }
+
         QCoreApplication::processEvents();
     }
 
@@ -449,30 +483,5 @@ void MainWindow::openSettings() {
 void MainWindow::reloadCameras() {
     for(auto &cap : captures) if(cap.isOpened()) cap.release();
     captures.clear();
-
-    QString user = settingsDialog->getGlobalUser();
-    QString pass = settingsDialog->getGlobalPass();
-    QString urlTemplate = settingsDialog->getUrlTemplate();
-
-    for(int i=0; i<5; i++) {
-        QString input = settingsDialog->getCameraIp(i);
-        QString url;
-
-        if(input.isEmpty()) url = "";
-        else if(input == "0") url = "0";
-        else if(input.contains("://")) url = input;
-        else url = urlTemplate.arg(user, pass, input);
-
-        cv::VideoCapture cap;
-        if(!url.isEmpty()) {
-            qDebug() << "Init Camera" << i << "Target:" << input;
-            if(url == "0") cap.open(0);
-            else {
-                cap.open(url.toStdString());
-                cap.set(cv::CAP_PROP_BUFFERSIZE, 0);
-            }
-        }
-        captures.push_back(cap);
-    }
+    captures.resize(5);
 }
-
