@@ -14,9 +14,15 @@ class SettingDialog : public QDialog {
 public:
     explicit SettingDialog(QWidget *parent = nullptr);
 
-    QString getCameraUrl(int index);
-    QString getSelectedScannerPort();
+    QString getCameraIp(int index);
+    int getCameraRotation(int index);
+    QString getGlobalUser();
+    QString getGlobalPass();
 
+    // NOWE: Pobieranie szablonu linku
+    QString getUrlTemplate();
+
+    QString getSelectedScannerPort();
     int getAppWidth();
     int getAppHeight();
     bool isFullScreen();
@@ -31,9 +37,16 @@ private:
     void setupUi();
     QSettings* getSettings();
 
-    std::vector<QLineEdit*> cameraInputs;
-    QComboBox *scannerSelector;
+    struct CameraRow {
+        QLineEdit *ipEdit;
+        QComboBox *rotationCombo;
+    };
 
+    QLineEdit *editGlobalUser;
+    QLineEdit *editGlobalPass;
+    QLineEdit *editUrlTemplate; // NOWE POLE
+    std::vector<CameraRow> cameraRows;
+    QComboBox *scannerSelector;
     QSpinBox *spinWidth;
     QSpinBox *spinHeight;
     QCheckBox *checkFullScreen;
