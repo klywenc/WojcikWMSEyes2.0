@@ -18,8 +18,8 @@ public:
     int getCameraRotation(int index);
     QString getGlobalUser();
     QString getGlobalPass();
-
     QString getUrlTemplate();
+    int getProtocolMode(); // 0 = HTTP, 1 = RTSP
 
     QString getSelectedScannerPort();
     int getAppWidth();
@@ -31,6 +31,7 @@ public:
 public slots:
     void saveSettings();
     void refreshPorts();
+    void onProtocolChanged(int index);
 
 private:
     void setupUi();
@@ -43,7 +44,9 @@ private:
 
     QLineEdit *editGlobalUser;
     QLineEdit *editGlobalPass;
-    QLineEdit *editUrlTemplate; 
+    QComboBox *comboProtocol;
+    QLineEdit *editUrlTemplate;
+
     std::vector<CameraRow> cameraRows;
     QComboBox *scannerSelector;
     QSpinBox *spinWidth;
@@ -54,4 +57,3 @@ private:
 };
 
 #endif
-
