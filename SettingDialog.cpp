@@ -28,12 +28,10 @@ void SettingDialog::setupUi() {
     QWidget *tabCameras = new QWidget();
     QVBoxLayout *camVBox = new QVBoxLayout(tabCameras);
 
-    // 1. Sekcja: Szablon URL (Najważniejsza zmiana)
     QGroupBox *grpTemplate = new QGroupBox("Zaawansowana Konfiguracja Linku RTSP");
     QFormLayout *templateLayout = new QFormLayout(grpTemplate);
 
     editUrlTemplate = new QLineEdit();
-    // Domyślny szablon dla Dahua/Hikvision (z Twojego skryptu)
     QString defaultTemplate = "rtsp://%1:%2@%3:554/cam/realmonitor?channel=1&subtype=0&proto=Onvif";
     editUrlTemplate->setText(settings->value("rtsp_template", defaultTemplate).toString());
 
@@ -59,7 +57,6 @@ void SettingDialog::setupUi() {
     authLayout->addRow("Hasło (%2):", editGlobalPass);
     camVBox->addWidget(grpAuth);
 
-    // 3. Sekcja: Lista Kamer
     QGroupBox *grpList = new QGroupBox("Adresy IP (%3) i Obrót");
     QGridLayout *gridCam = new QGridLayout(grpList);
 
@@ -229,3 +226,4 @@ QString SettingDialog::getServerUrl() {
 int SettingDialog::getUploadTimeout() {
     QSettings *s = getSettings(); int v = s->value("upload_timeout", 5).toInt(); delete s; return v;
 }
+
