@@ -178,12 +178,10 @@ void MainWindow::setupUi() {
     setCentralWidget(centralWidget);
 }
 
-// --- FUNKCJA RYSOWANIA STATUSU I ANIMACJI ---
 void MainWindow::drawStatusOnImage(int camIndex, const QPixmap &basePix, QString text, QColor overlayColor, bool isAnimated) {
     if (camIndex < 0 || camIndex >= camDisplays.size()) return;
     if (basePix.isNull()) return;
 
-    // Tworzymy kopię, żeby rysować po niej
     QPixmap tempPix = basePix;
     QPainter painter(&tempPix);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -191,27 +189,22 @@ void MainWindow::drawStatusOnImage(int camIndex, const QPixmap &basePix, QString
     int w = tempPix.width();
     int h = tempPix.height();
 
-    // 1. Nakładka (Półprzezroczysty pasek/tło na środku)
-    // Jeśli animacja (wysyłanie) -> Ciemne tło na całym obrazku dla skupienia
     if (isAnimated) {
-        painter.fillRect(tempPix.rect(), QColor(0, 0, 0, 100)); // Przyciemnienie całego
+        painter.fillRect(tempPix.rect(), QColor(0, 0, 0, 100));
     }
 
-    // 2. Rysowanie animacji (Spinner)
     if (isAnimated) {
-        int size = qMin(w, h) / 4; // Rozmiar kółka
+        int size = qMin(w, h) / 4;
         int cx = w / 2;
         int cy = h / 2;
 
         painter.setPen(QPen(Qt::white, 6, Qt::SolidLine, Qt::RoundCap));
         painter.translate(cx, cy);
         painter.rotate(spinnerAngle);
-        // Rysujemy łuk (kółko z przerwą)
         painter.drawArc(-size/2, -size/2, size, size, 0, 270 * 16);
         painter.resetTransform();
     }
 
-    // 3. Rysowanie Tekstu (Jeśli jest)
     if (!text.isEmpty()) {
         painter.setPen(Qt::white);
         QFont font = painter.font();
@@ -219,7 +212,6 @@ void MainWindow::drawStatusOnImage(int camIndex, const QPixmap &basePix, QString
         font.setBold(true);
         painter.setFont(font);
 
-        // Jeśli to błąd, rysujemy czerwony pasek na górze
         if (!isAnimated) {
             QRect barRect(0, 0, w, 50);
             painter.fillRect(barRect, overlayColor); // Czerwony pasek
@@ -233,7 +225,6 @@ void MainWindow::drawStatusOnImage(int camIndex, const QPixmap &basePix, QString
 
     painter.end();
 
-    // Skalowanie do labela
     QSize labelSize = camDisplays[camIndex]->size();
     if (!labelSize.isEmpty()) {
         camDisplays[camIndex]->setPixmap(tempPix.scaled(
@@ -244,10 +235,8 @@ void MainWindow::drawStatusOnImage(int camIndex, const QPixmap &basePix, QString
     }
 }
 
-// --- SLOT ANIMACJI (Wywoływany co 30ms) ---
 void MainWindow::updateUploadAnimation() {
-    spinnerAngle = (spinnerAngle + 15) % 360; // Obrót
-    // Przerysowujemy nakładkę na bieżącej kamerze
+    spinnerAngle = (spinnerAngle + 15) % 360;
     drawStatusOnImage(currentUploadCamIndex, currentBasePixmap, "WYSYŁANIE...", QColor(0,0,0,0), true);
 }
 
@@ -255,7 +244,6 @@ void MainWindow::captureSnapshot() {
     qDebug() << "Snapshot for pallet:" << currentPalletCode;
     QApplication::setOverrideCursor(Qt::WaitCursor);
 
-    // TYLKO NUMER PALETY W NAGŁÓWKU
     headerTitle->setText("PALETA: " + currentPalletCode);
 
     QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd-HHmm");
@@ -288,7 +276,6 @@ void MainWindow::captureSnapshot() {
                 QString fullPath = QDir("tmp").filePath(filename);
 
                 if(img.save(fullPath, "JPG", 90)) {
-                    // Wyświetl czyste zdjęcie
                     QSize labelSize = camDisplays[i]->size();
                     if(!labelSize.isEmpty()) {
                         QPixmap pix = QPixmap::fromImage(img);
