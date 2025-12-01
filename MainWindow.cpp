@@ -30,12 +30,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     if (fs) {
         this->setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
         this->showFullScreen();
-        qDebug() << "APP: Fullscreen mode active.";
+        qDebug() << "APP: Fullscreen Kiosk Mode.";
     } else {
         this->setWindowFlags(Qt::Window);
         this->resize(w, h);
         this->show();
-        qDebug() << "APP: Windowed mode active:" << w << "x" << h;
+        qDebug() << "APP: Window Mode:" << w << "x" << h;
     }
 
     serialScanner = new QSerialPort(this);
@@ -138,7 +138,7 @@ void MainWindow::setupUi() {
     if(!logoPix.isNull()) logoLabel->setPixmap(logoPix.scaledToHeight(60, Qt::SmoothTransformation));
     else logoLabel->setText("LOGO");
 
-    headerTitle = new QLabel("Zeskanuj Palete", this);
+    headerTitle = new QLabel("ZESKANUJ KOD PALETY", this);
     headerTitle->setObjectName("headerTitle");
     headerTitle->setAlignment(Qt::AlignCenter);
 
@@ -156,11 +156,11 @@ void MainWindow::setupUi() {
     headerLayout->addStretch();
     headerLayout->addWidget(dateLabel);
 
-    cam1_TopLeft = createCameraLabel("Cam 1");
-    cam4_TopRight = createCameraLabel("Cam 4");
-    cam0_BotLeft = createCameraLabel("Cam 0");
-    cam2_BotMid = createCameraLabel("Cam 2");
-    cam3_BotRight = createCameraLabel("Cam 3");
+    cam1_TopLeft = createCameraLabel("Kamera 1");
+    cam4_TopRight = createCameraLabel("Kamera 4");
+    cam0_BotLeft = createCameraLabel("Kamera 0");
+    cam2_BotMid = createCameraLabel("Kamera 2");
+    cam3_BotRight = createCameraLabel("Kamera 3");
 
     camDisplays = { cam0_BotLeft, cam1_TopLeft, cam2_BotMid, cam3_BotRight, cam4_TopRight };
 
@@ -241,49 +241,62 @@ void MainWindow::updateUploadAnimation() {
 }
 
 void MainWindow::captureSnapshot() {
-    qDebug() << "SNAPSHOT: Starting sequence for pallet:" << currentPalletCode;
+    qDebug() << "SNAPSHOT: Starting sequence. Pallet:" << currentPalletCode;
     QApplication::setOverrideCursor(Qt::WaitCursor);
 
-    headerTitle->setText("Paleta: " + currentPalletCode);
-
+    headerTitle->setText("PALETA: " + currentPalletCode);
     QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd-HHmm");
+
+    // Pobierz dane autoryzacyjne i szablon RAZ
+    QString user = settingsDialog->getGlobalUser();
+    QString pass = settingsDialog->getGlobalPass();
+    QString urlTemplate = settingsDialog->getUrlTemplate();
 
     for(size_t i=0; i<captures.size(); i++) {
         if(i >= camDisplays.size()) break;
 
         if(!captures[i].isOpened()) {
-             QString url = settingsDialog->getCameraUrl(i);
-             if(!url.isEmpty() && url != "0") captures[i].open(url.toStdString());
+             QString ip = settingsDialog->getCameraIp(i);
+             QString url;
+
+             if(ip == "0") url = "0";
+             else if(ip.contains("://")) url = ip; // Jeśli user wpisał pełny link, użyj go
+             else {
+                 // Użyj szablonu: %1=user, %2=pass, %3=ip
+                 url = urlTemplate.arg(user, pass, ip);
+             }
+
+             if(!ip.isEmpty()) captures[i].open(url.toStdString());
         }
 
         if(captures[i].isOpened()) {
             cv::Mat frame;
             bool success = false;
 
-            for(int k=0; k<5; k++) {
-                if(captures[i].read(frame) && !frame.empty()) success = true;
+            for(int k=0; k<25; k++) {
+                if(captures[i].read(frame) && !frame.empty()) {
+                    success = true;
+                    break;
+                }
             }
 
             if(success && !frame.empty()) {
+                int rotation = settingsDialog->getCameraRotation(i);
+                if (rotation == 90) cv::rotate(frame, frame, cv::ROTATE_90_CLOCKWISE);
+                else if (rotation == 180) cv::rotate(frame, frame, cv::ROTATE_180);
+                else if (rotation == 270) cv::rotate(frame, frame, cv::ROTATE_90_COUNTERCLOCKWISE);
+
                 cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
                 QImage img((const uchar*)frame.data, frame.cols, frame.rows, frame.step, QImage::Format_RGB888);
 
-                QString filename = QString("%1_%2_%3.jpg")
-                        .arg(currentPalletCode)
-                        .arg(timestamp)
-                        .arg(i);
-
+                QString filename = QString("%1_%2_%3.jpg").arg(currentPalletCode).arg(timestamp).arg(i);
                 QString fullPath = QDir("tmp").filePath(filename);
 
                 if(img.save(fullPath, "JPG", 90)) {
                     QSize labelSize = camDisplays[i]->size();
                     if(!labelSize.isEmpty()) {
                         QPixmap pix = QPixmap::fromImage(img);
-                        camDisplays[i]->setPixmap(pix.scaled(
-                            labelSize,
-                            Qt::KeepAspectRatio,
-                            Qt::SmoothTransformation
-                        ));
+                        camDisplays[i]->setPixmap(pix.scaled(labelSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
                     }
 
                     UploadJob job;
@@ -291,38 +304,26 @@ void MainWindow::captureSnapshot() {
                     job.palletCode = currentPalletCode;
                     job.camIndex = (int)i;
                     uploadQueue.enqueue(job);
-                    qDebug() << "SNAPSHOT: Saved" << fullPath;
                 }
             } else {
-                camDisplays[i]->setText("BRAK OBRAZU");
-                qWarning() << "SNAPSHOT: Failed to decode frame cam" << i;
+                camDisplays[i]->setText("BŁĄD OBRAZU");
             }
         } else {
-             camDisplays[i]->setText("BRAK POŁĄCZENIA ");
-             qWarning() << "SNAPSHOT: Kamera" << i << "not connected";
+             camDisplays[i]->setText("BRAK POŁĄCZENIA");
         }
         QCoreApplication::processEvents();
     }
 
     QApplication::restoreOverrideCursor();
-
-    if (!uploadQueue.isEmpty() && !isUploading) {
-        startNextUpload();
-    }
+    if (!uploadQueue.isEmpty() && !isUploading) startNextUpload();
 }
 
 void MainWindow::startNextUpload() {
-    if (uploadQueue.isEmpty()) {
-        isUploading = false;
-        qDebug() << "UPLOAD: Queue finished.";
-        return;
-    }
-
+    if (uploadQueue.isEmpty()) { isUploading = false; return; }
     isUploading = true;
     UploadJob job = uploadQueue.head();
 
-    qDebug() << "UPLOAD: Starting file" << job.filePath;
-
+    qDebug() << "UPLOAD: Starting" << job.filePath;
     currentUploadCamIndex = job.camIndex;
     currentBasePixmap.load(job.filePath);
     spinnerAngle = 0;
@@ -334,7 +335,7 @@ void MainWindow::startNextUpload() {
     QUrl url(serverUrl);
     QUrlQuery query;
     query.addQueryItem("sulabel", job.palletCode);
-    query.addQueryItem("Kamera", QString::number(job.camIndex));
+    query.addQueryItem("cam", QString::number(job.camIndex));
     query.addQueryItem("gate", "2");
     url.setQuery(query);
 
@@ -342,22 +343,16 @@ void MainWindow::startNextUpload() {
     request.setTransferTimeout(timeoutSec * 1000);
 
     QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-
     QHttpPart imagePart;
     imagePart.setHeader(QNetworkRequest::ContentTypeHeader, QVariant("image/jpeg"));
-    QString disposition = QString("form-data; name=\"photo\"; filename=\"%1\"")
-                          .arg(QFileInfo(job.filePath).fileName());
-    imagePart.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant(disposition));
+    imagePart.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant(QString("form-data; name=\"photo\"; filename=\"%1\"").arg(QFileInfo(job.filePath).fileName())));
 
     QFile *file = new QFile(job.filePath);
     if (!file->open(QIODevice::ReadOnly)) {
         animationTimer->stop();
-        drawStatusOnImage(job.camIndex, currentBasePixmap, "FILE ERROR", Qt::red);
-        delete multiPart;
-        delete file;
-        uploadQueue.dequeue();
-        startNextUpload();
-        return;
+        drawStatusOnImage(job.camIndex, currentBasePixmap, "BŁĄD PLIKU", Qt::red);
+        delete multiPart; delete file;
+        uploadQueue.dequeue(); startNextUpload(); return;
     }
 
     imagePart.setBodyDevice(file);
@@ -374,30 +369,21 @@ void MainWindow::startNextUpload() {
 
 void MainWindow::onUploadFinished(QNetworkReply *reply) {
     animationTimer->stop();
-
     if(uploadQueue.isEmpty()) { reply->deleteLater(); return; }
     UploadJob job = uploadQueue.head();
 
     if (reply->error() == QNetworkReply::NoError) {
         qDebug() << "UPLOAD: Success." << reply->readAll();
-
         QSize labelSize = camDisplays[job.camIndex]->size();
         if(!labelSize.isEmpty() && !currentBasePixmap.isNull()) {
-            camDisplays[job.camIndex]->setPixmap(currentBasePixmap.scaled(
-                labelSize,
-                Qt::KeepAspectRatio,
-                Qt::SmoothTransformation
-            ));
+            camDisplays[job.camIndex]->setPixmap(currentBasePixmap.scaled(labelSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         }
-
         if(!uploadQueue.isEmpty()) uploadQueue.dequeue();
-
     } else {
         qCritical() << "UPLOAD: Failed." << reply->errorString();
-        drawStatusOnImage(job.camIndex, currentBasePixmap, "UPLOAD ERROR", Qt::red);
+        drawStatusOnImage(job.camIndex, currentBasePixmap, "BŁĄD WYSYŁANIA", Qt::red);
         if(!uploadQueue.isEmpty()) uploadQueue.dequeue();
     }
-
     reply->deleteLater();
     startNextUpload();
 }
@@ -405,13 +391,10 @@ void MainWindow::onUploadFinished(QNetworkReply *reply) {
 void MainWindow::handleSerialScan() {
     QByteArray data = serialScanner->readAll();
     serialBuffer.append(data);
-
     if(serialBuffer.contains('\r') || serialBuffer.contains('\n')) {
         QString code = QString::fromUtf8(serialBuffer).trimmed();
         serialBuffer.clear();
-
         if(!code.isEmpty()) {
-            qDebug() << "SCANNER (Serial):" << code;
             currentPalletCode = code;
             captureSnapshot();
         }
@@ -420,11 +403,9 @@ void MainWindow::handleSerialScan() {
 
 void MainWindow::keyPressEvent(QKeyEvent *event) {
     static QString keyBuffer;
-
     if(settingsDialog->getSelectedScannerPort() == "KEYBOARD") {
         if(event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
             if(!keyBuffer.isEmpty()) {
-                qDebug() << "SCANNER (HID):" << keyBuffer;
                 currentPalletCode = keyBuffer;
                 captureSnapshot();
                 keyBuffer.clear();
@@ -443,15 +424,15 @@ void MainWindow::configureScanner() {
     QString portName = settingsDialog->getSelectedScannerPort();
 
     if(portName == "KEYBOARD") {
-        headerTitle->setText("Zeskanuj Paletę");
+        headerTitle->setText("ZESKANUJ KOD PALETY");
     } else {
         serialScanner->setPortName(portName);
         serialScanner->setBaudRate(QSerialPort::Baud9600);
         if(serialScanner->open(QIODevice::ReadOnly)) {
             connect(serialScanner, &QSerialPort::readyRead, this, &MainWindow::handleSerialScan);
-            headerTitle->setText("READY (" + portName + ")");
+            headerTitle->setText("GOTOWY (" + portName + ")");
         } else {
-            headerTitle->setText("ERROR: " + portName);
+            headerTitle->setText("BŁĄD: " + portName);
         }
     }
 }
@@ -469,10 +450,23 @@ void MainWindow::openSettings() {
 void MainWindow::reloadCameras() {
     for(auto &cap : captures) if(cap.isOpened()) cap.release();
     captures.clear();
+
+    QString user = settingsDialog->getGlobalUser();
+    QString pass = settingsDialog->getGlobalPass();
+    QString urlTemplate = settingsDialog->getUrlTemplate();
+
     for(int i=0; i<5; i++) {
-        QString url = settingsDialog->getCameraUrl(i);
+        QString input = settingsDialog->getCameraIp(i);
+        QString url;
+
+        if(input.isEmpty()) url = "";
+        else if(input == "0") url = "0";
+        else if(input.contains("://")) url = input;
+        else url = urlTemplate.arg(user, pass, input);
+
         cv::VideoCapture cap;
         if(!url.isEmpty()) {
+            qDebug() << "Init Camera" << i << "Target:" << input;
             if(url == "0") cap.open(0);
             else {
                 cap.open(url.toStdString());
