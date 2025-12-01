@@ -19,7 +19,6 @@ public:
     QString getGlobalUser();
     QString getGlobalPass();
 
-    // NOWE: Pobieranie szablonu linku
     QString getUrlTemplate();
 
     QString getSelectedScannerPort();
@@ -44,7 +43,7 @@ private:
 
     QLineEdit *editGlobalUser;
     QLineEdit *editGlobalPass;
-    QLineEdit *editUrlTemplate; // NOWE POLE
+    QLineEdit *editUrlTemplate; 
     std::vector<CameraRow> cameraRows;
     QComboBox *scannerSelector;
     QSpinBox *spinWidth;
@@ -55,3 +54,4 @@ private:
 };
 
 #endif
+
