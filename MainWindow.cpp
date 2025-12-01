@@ -260,9 +260,8 @@ void MainWindow::captureSnapshot() {
              QString url;
 
              if(ip == "0") url = "0";
-             else if(ip.contains("://")) url = ip; // Jeśli user wpisał pełny link, użyj go
+             else if(ip.contains("://")) url = ip; 
              else {
-                 // Użyj szablonu: %1=user, %2=pass, %3=ip
                  url = urlTemplate.arg(user, pass, ip);
              }
 
@@ -476,3 +475,4 @@ void MainWindow::reloadCameras() {
         captures.push_back(cap);
     }
 }
+
