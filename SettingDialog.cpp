@@ -24,25 +24,40 @@ void SettingDialog::setupUi() {
     QTabWidget *tabs = new QTabWidget();
     QSettings *settings = getSettings();
 
-    // --- CAMERAS TAB ---
+    // --- ZAKŁADKA 1: KAMERY ---
     QWidget *tabCameras = new QWidget();
     QVBoxLayout *camVBox = new QVBoxLayout(tabCameras);
 
-    QGroupBox *grpTemplate = new QGroupBox("Zaawansowana Konfiguracja Linku RTSP");
+    QGroupBox *grpTemplate = new QGroupBox("Konfiguracja Protokołu i Linku");
     QFormLayout *templateLayout = new QFormLayout(grpTemplate);
 
+    comboProtocol = new QComboBox();
+    comboProtocol->addItem("HTTP (Zdjęcie / Wget) - Zalecane", 0);
+    comboProtocol->addItem("RTSP (Strumień / FFmpeg)", 1);
+
+    int savedProto = settings->value("protocol_index", 0).toInt();
+    comboProtocol->setCurrentIndex(savedProto);
+    connect(comboProtocol, SIGNAL(currentIndexChanged(int)), this, SLOT(onProtocolChanged(int)));
+
     editUrlTemplate = new QLineEdit();
-    QString defaultTemplate = "rtsp://%1:%2@%3:554/cam/realmonitor?channel=1&subtype=0&proto=Onvif";
-    editUrlTemplate->setText(settings->value("rtsp_template", defaultTemplate).toString());
+    QString defaultTmpl = "http://%3/cgi-bin/snapshot.cgi?channel=1";
+    editUrlTemplate->setText(settings->value("rtsp_template", defaultTmpl).toString());
 
-    QLabel *infoLabel = new QLabel("Legenda: %1 = Użytkownik, %2 = Hasło, %3 = Adres IP");
-    infoLabel->setStyleSheet("color: gray; font-style: italic; font-size: 11px;");
+    QLabel *helpLabel = new QLabel(
+        "<b>Legenda:</b> "
+        "<span style='color: #d32f2f;'><b>%1</b></span>=Użytkownik, "
+        "<span style='color: #d32f2f;'><b>%2</b></span>=Hasło, "
+        "<span style='color: #d32f2f;'><b>%3</b></span>=IP<br>"
+        "Dla HTTP User/Pass są wysyłane w nagłówku (niewidoczne w URL)."
+    );
+    helpLabel->setTextFormat(Qt::RichText);
+    helpLabel->setStyleSheet("color: #555; font-size: 11px; margin-top: 5px;");
 
+    templateLayout->addRow("Protokół:", comboProtocol);
     templateLayout->addRow("Szablon URL:", editUrlTemplate);
-    templateLayout->addRow("", infoLabel);
+    templateLayout->addWidget(helpLabel);
     camVBox->addWidget(grpTemplate);
 
-    // 2. Sekcja: Dane Logowania
     QGroupBox *grpAuth = new QGroupBox("Globalne Dane Logowania");
     QFormLayout *authLayout = new QFormLayout(grpAuth);
 
@@ -89,7 +104,7 @@ void SettingDialog::setupUi() {
     camVBox->addWidget(grpList);
     tabs->addTab(tabCameras, "Kamery CCTV");
 
-    // --- SCANNER TAB ---
+    // --- ZAKŁADKA 2: SKANER ---
     QWidget *tabScanner = new QWidget();
     QVBoxLayout *scanVBox = new QVBoxLayout(tabScanner);
     scannerSelector = new QComboBox();
@@ -103,7 +118,7 @@ void SettingDialog::setupUi() {
     scanVBox->addStretch();
     tabs->addTab(tabScanner, "Skaner");
 
-    // --- SYSTEM TAB ---
+    // --- ZAKŁADKA 3: SYSTEM ---
     QWidget *tabSystem = new QWidget();
     QFormLayout *sysLayout = new QFormLayout(tabSystem);
 
@@ -145,6 +160,14 @@ void SettingDialog::setupUi() {
     refreshPorts();
 }
 
+void SettingDialog::onProtocolChanged(int index) {
+    if (index == 0) {
+        editUrlTemplate->setText("http://%3/cgi-bin/snapshot.cgi?channel=1");
+    } else {
+        editUrlTemplate->setText("rtsp://%1:%2@%3:554/cam/realmonitor?channel=1&subtype=0&proto=Onvif");
+    }
+}
+
 void SettingDialog::refreshPorts() {
     QSettings *settings = getSettings();
     QString savedPort = settings->value("scanner_port", "KEYBOARD").toString();
@@ -167,7 +190,7 @@ void SettingDialog::refreshPorts() {
 void SettingDialog::saveSettings() {
     QSettings *settings = getSettings();
 
-    // Zapis Szablonu i Danych
+    settings->setValue("protocol_index", comboProtocol->currentIndex());
     settings->setValue("rtsp_template", editUrlTemplate->text());
     settings->setValue("cam_user", editGlobalUser->text());
     settings->setValue("cam_pass", editGlobalPass->text());
@@ -188,14 +211,15 @@ void SettingDialog::saveSettings() {
     accept();
 }
 
+int SettingDialog::getProtocolMode() {
+    QSettings *s = getSettings(); int v = s->value("protocol_index", 0).toInt(); delete s; return v;
+}
 QString SettingDialog::getUrlTemplate() {
     QSettings *s = getSettings();
-    // Domyślny fallback, gdyby config był pusty
-    QString defaultTmpl = "rtsp://%1:%2@%3:554/cam/realmonitor?channel=1&subtype=0&proto=Onvif";
+    QString defaultTmpl = "http://%3/cgi-bin/snapshot.cgi?channel=1";
     QString v = s->value("rtsp_template", defaultTmpl).toString();
     delete s; return v;
 }
-
 QString SettingDialog::getCameraIp(int index) {
     QSettings *s = getSettings(); QString v = s->value(QString("camera_%1_ip").arg(index), "").toString(); delete s; return v;
 }
@@ -226,4 +250,3 @@ QString SettingDialog::getServerUrl() {
 int SettingDialog::getUploadTimeout() {
     QSettings *s = getSettings(); int v = s->value("upload_timeout", 5).toInt(); delete s; return v;
 }
-
