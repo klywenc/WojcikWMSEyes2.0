@@ -20,16 +20,15 @@ QSettings* SettingDialog::getSettings() {
 }
 
 void SettingDialog::setupUi() {
-    QVBoxLayout *mainLayout = new QVBoxLayout(this);
-    QTabWidget *tabs = new QTabWidget();
+    auto *mainLayout = new QVBoxLayout(this);
+    auto *tabs = new QTabWidget();
     QSettings *settings = getSettings();
 
-    // --- ZAKŁADKA 1: KAMERY ---
-    QWidget *tabCameras = new QWidget();
-    QVBoxLayout *camVBox = new QVBoxLayout(tabCameras);
+    auto *tabCameras = new QWidget();
+    auto *camVBox = new QVBoxLayout(tabCameras);
 
-    QGroupBox *grpTemplate = new QGroupBox("Konfiguracja Protokołu i Linku");
-    QFormLayout *templateLayout = new QFormLayout(grpTemplate);
+    auto *grpTemplate = new QGroupBox("Konfiguracja Protokołu i Linku");
+    auto *templateLayout = new QFormLayout(grpTemplate);
 
     comboProtocol = new QComboBox();
     comboProtocol->addItem("HTTP (Zdjęcie / Wget) - Zalecane", 0);
@@ -43,7 +42,7 @@ void SettingDialog::setupUi() {
     QString defaultTmpl = "http://%3/cgi-bin/snapshot.cgi?channel=1";
     editUrlTemplate->setText(settings->value("rtsp_template", defaultTmpl).toString());
 
-    QLabel *helpLabel = new QLabel(
+    auto *helpLabel = new QLabel(
         "<b>Legenda:</b> "
         "<span style='color: #d32f2f;'><b>%1</b></span>=Użytkownik, "
         "<span style='color: #d32f2f;'><b>%2</b></span>=Hasło, "
@@ -58,8 +57,8 @@ void SettingDialog::setupUi() {
     templateLayout->addWidget(helpLabel);
     camVBox->addWidget(grpTemplate);
 
-    QGroupBox *grpAuth = new QGroupBox("Globalne Dane Logowania");
-    QFormLayout *authLayout = new QFormLayout(grpAuth);
+    auto *grpAuth = new QGroupBox("Globalne Dane Logowania");
+    auto *authLayout = new QFormLayout(grpAuth);
 
     editGlobalUser = new QLineEdit();
     editGlobalUser->setText(settings->value("cam_user", "snapshot1").toString());
@@ -72,18 +71,18 @@ void SettingDialog::setupUi() {
     authLayout->addRow("Hasło (%2):", editGlobalPass);
     camVBox->addWidget(grpAuth);
 
-    QGroupBox *grpList = new QGroupBox("Adresy IP (%3) i Obrót");
-    QGridLayout *gridCam = new QGridLayout(grpList);
+    auto *grpList = new QGroupBox("Adresy IP (%3) i Obrót");
+    auto *gridCam = new QGridLayout(grpList);
 
     cameraRows.clear();
     for(int i=0; i<5; i++) {
         gridCam->addWidget(new QLabel(QString("Kamera %1:").arg(i+1)), i, 0);
 
-        QLineEdit *editIp = new QLineEdit();
+        auto *editIp = new QLineEdit();
         editIp->setPlaceholderText("192.168.160.xx");
         editIp->setText(settings->value(QString("camera_%1_ip").arg(i), "").toString());
 
-        QComboBox *comboRot = new QComboBox();
+        auto *comboRot = new QComboBox();
         comboRot->addItem("0° (Brak)", 0);
         comboRot->addItem("90° Prawo (CW)", 90);
         comboRot->addItem("180°", 180);
@@ -96,7 +95,7 @@ void SettingDialog::setupUi() {
         gridCam->addWidget(editIp, i, 1);
         gridCam->addWidget(comboRot, i, 2);
 
-        CameraRow row;
+        CameraRow row{};
         row.ipEdit = editIp;
         row.rotationCombo = comboRot;
         cameraRows.push_back(row);
@@ -104,12 +103,11 @@ void SettingDialog::setupUi() {
     camVBox->addWidget(grpList);
     tabs->addTab(tabCameras, "Kamery CCTV");
 
-    // --- ZAKŁADKA 2: SKANER ---
-    QWidget *tabScanner = new QWidget();
-    QVBoxLayout *scanVBox = new QVBoxLayout(tabScanner);
+    auto *tabScanner = new QWidget();
+    auto *scanVBox = new QVBoxLayout(tabScanner);
     scannerSelector = new QComboBox();
 
-    QPushButton *btnRefresh = new QPushButton("Odśwież Porty");
+    auto *btnRefresh = new QPushButton("Odśwież Porty");
     connect(btnRefresh, &QPushButton::clicked, this, &SettingDialog::refreshPorts);
 
     scanVBox->addWidget(new QLabel("Źródło Skanera:"));
@@ -118,9 +116,8 @@ void SettingDialog::setupUi() {
     scanVBox->addStretch();
     tabs->addTab(tabScanner, "Skaner");
 
-    // --- ZAKŁADKA 3: SYSTEM ---
-    QWidget *tabSystem = new QWidget();
-    QFormLayout *sysLayout = new QFormLayout(tabSystem);
+    auto *tabSystem = new QWidget();
+    auto *sysLayout = new QFormLayout(tabSystem);
 
     spinWidth = new QSpinBox();
     spinWidth->setRange(800, 7680);
@@ -149,7 +146,7 @@ void SettingDialog::setupUi() {
 
     tabs->addTab(tabSystem, "System");
 
-    QPushButton *btnSave = new QPushButton("ZAPISZ I ZRESETUJ");
+    auto *btnSave = new QPushButton("ZAPISZ I ZRESETUJ");
     btnSave->setStyleSheet("background-color: #d32f2f; color: white; font-weight: bold; padding: 10px;");
     connect(btnSave, &QPushButton::clicked, this, &SettingDialog::saveSettings);
 
@@ -160,17 +157,18 @@ void SettingDialog::setupUi() {
     refreshPorts();
 }
 
-void SettingDialog::onProtocolChanged(int index) {
+void SettingDialog::onProtocolChanged(int index) const {
     if (index == 0) {
         editUrlTemplate->setText("http://%3/cgi-bin/snapshot.cgi?channel=1");
     } else {
+        // editUrlTemplate->setText("rtsp://%3/h264.sdp");
         editUrlTemplate->setText("rtsp://%1:%2@%3:554/cam/realmonitor?channel=1&subtype=0&proto=Onvif");
     }
 }
 
-void SettingDialog::refreshPorts() {
-    QSettings *settings = getSettings();
-    QString savedPort = settings->value("scanner_port", "KEYBOARD").toString();
+void SettingDialog::refreshPorts() const {
+    const QSettings *settings = getSettings();
+    const QString savedPort = settings->value("scanner_port", "KEYBOARD").toString();
     delete settings;
 
     scannerSelector->clear();
@@ -183,8 +181,7 @@ void SettingDialog::refreshPorts() {
         scannerSelector->addItem(label, info.portName());
     }
 
-    int idx = scannerSelector->findData(savedPort);
-    if(idx != -1) scannerSelector->setCurrentIndex(idx);
+    if(const int idx = scannerSelector->findData(savedPort); idx != -1) scannerSelector->setCurrentIndex(idx);
 }
 
 void SettingDialog::saveSettings() {
@@ -215,38 +212,38 @@ int SettingDialog::getProtocolMode() {
     QSettings *s = getSettings(); int v = s->value("protocol_index", 0).toInt(); delete s; return v;
 }
 QString SettingDialog::getUrlTemplate() {
-    QSettings *s = getSettings();
-    QString defaultTmpl = "http://%3/cgi-bin/snapshot.cgi?channel=1";
+    const QSettings *s = getSettings();
+    const QString defaultTmpl = "http://%3/cgi-bin/snapshot.cgi?channel=1";
     QString v = s->value("rtsp_template", defaultTmpl).toString();
     delete s; return v;
 }
 QString SettingDialog::getCameraIp(int index) {
-    QSettings *s = getSettings(); QString v = s->value(QString("camera_%1_ip").arg(index), "").toString(); delete s; return v;
+    const QSettings *s = getSettings(); QString v = s->value(QString("camera_%1_ip").arg(index), "").toString(); delete s; return v;
 }
 int SettingDialog::getCameraRotation(int index) {
-    QSettings *s = getSettings(); int v = s->value(QString("camera_%1_rot").arg(index), 0).toInt(); delete s; return v;
+    const QSettings *s = getSettings(); int v = s->value(QString("camera_%1_rot").arg(index), 0).toInt(); delete s; return v;
 }
 QString SettingDialog::getGlobalUser() {
-    QSettings *s = getSettings(); QString v = s->value("cam_user", "snapshot1").toString(); delete s; return v;
+    const QSettings *s = getSettings(); QString v = s->value("cam_user", "snapshot1").toString(); delete s; return v;
 }
 QString SettingDialog::getGlobalPass() {
-    QSettings *s = getSettings(); QString v = s->value("cam_pass", "snapshot1").toString(); delete s; return v;
+    const QSettings *s = getSettings(); QString v = s->value("cam_pass", "snapshot1").toString(); delete s; return v;
 }
 QString SettingDialog::getSelectedScannerPort() {
-    QSettings *s = getSettings(); QString v = s->value("scanner_port", "KEYBOARD").toString(); delete s; return v;
+    const QSettings *s = getSettings(); QString v = s->value("scanner_port", "KEYBOARD").toString(); delete s; return v;
 }
 int SettingDialog::getAppWidth() {
-    QSettings *s = getSettings(); int v = s->value("app_width", 1920).toInt(); delete s; return v;
+    const QSettings *s = getSettings(); int v = s->value("app_width", 1920).toInt(); delete s; return v;
 }
 int SettingDialog::getAppHeight() {
-    QSettings *s = getSettings(); int v = s->value("app_height", 1080).toInt(); delete s; return v;
+    const QSettings *s = getSettings(); int v = s->value("app_height", 1080).toInt(); delete s; return v;
 }
 bool SettingDialog::isFullScreen() {
-    QSettings *s = getSettings(); bool v = s->value("fullscreen", true).toBool(); delete s; return v;
+    const QSettings *s = getSettings(); bool v = s->value("fullscreen", true).toBool(); delete s; return v;
 }
 QString SettingDialog::getServerUrl() {
-    QSettings *s = getSettings(); QString v = s->value("server_url", "http://192.168.130.60:8000/php/upload.php").toString(); delete s; return v;
+    const QSettings *s = getSettings(); QString v = s->value("server_url", "http://192.168.130.60:8000/php/upload.php").toString(); delete s; return v;
 }
 int SettingDialog::getUploadTimeout() {
-    QSettings *s = getSettings(); int v = s->value("upload_timeout", 5).toInt(); delete s; return v;
+    const QSettings *s = getSettings(); int v = s->value("upload_timeout", 5).toInt(); delete s; return v;
 }
