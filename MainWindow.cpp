@@ -384,18 +384,40 @@ void MainWindow::onCameraFinished(int index, bool success, const QString &filePa
     bool finalSuccess = success;
     QString finalMsg = errorMsg;
 
-    // Test mode override
+    // --- TRYB TESTOWY (CTRL+4) ---
+    // Jeśli dla tej kamery ustawiono statyczne zdjęcie, ignorujemy wynik z wątku
+    // i "udajemy", że kamera pobrała to zdjęcie testowe.
     if (staticOverrides.contains(index)) {
-        QString overridePath = staticOverrides[index];
-        if (QFile::exists(overridePath)) {
-            finalPath = overridePath;
-            finalSuccess = true;
-            finalMsg = "TEST DATA";
+        QString sourcePath = staticOverrides[index];
+        QImage testImg(sourcePath);
+
+        if (!testImg.isNull()) {
+            QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd-HHmm");
+            QString stdName = QString("%1_%2_%3.jpg")
+                              .arg(currentPalletCode)
+                              .arg(timestamp)
+                              .arg(index);
+
+            QString exeDir = QCoreApplication::applicationDirPath();
+            QString tmpPath = exeDir + "/tmp/" + stdName;
+
+            if (testImg.save(tmpPath, "JPG", 90)) {
+                qDebug() << "TEST OVERRIDE: Cam" << index << "simulated. Saved to:" << tmpPath;
+
+                finalPath = tmpPath;
+                finalSuccess = true;
+                finalMsg = "TEST DATA";
+            } else {
+                qCritical() << "TEST OVERRIDE: Failed to save test file to tmp!";
+            }
+        } else {
+            qWarning() << "TEST OVERRIDE: Source file invalid or missing:" << sourcePath;
         }
     }
 
     if (finalSuccess) {
         lastImagePaths[index] = finalPath;
+
         drawStatusOnImage(index, finalPath, 0);
 
         UploadJob job;
@@ -404,8 +426,9 @@ void MainWindow::onCameraFinished(int index, bool success, const QString &filePa
         job.camIndex = index;
 
         emit requestUpload(job);
+
     } else {
-        qWarning() << "Cam" << index << "Failed:" << finalMsg;
+        qWarning() << "MAIN: Cam" << index << "Failed:" << finalMsg;
         camDisplays[index]->setText("BŁĄD:\n" + finalMsg);
     }
 }
