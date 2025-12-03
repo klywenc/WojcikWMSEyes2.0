@@ -21,7 +21,8 @@ struct UploadJob {
     int camIndex;
 };
 
-class CameraWorker final : public QObject, public QRunnable {
+// --- CAMERA WORKER (Pobiera zdjęcie w tle) ---
+class CameraWorker : public QObject, public QRunnable {
     Q_OBJECT
 public:
     CameraWorker(int index, QString url, int protocolMode, int rotation,
@@ -29,7 +30,7 @@ public:
     void run() override;
 
 signals:
-    void resultReady(int index, bool success, QString filePath, QString errorMsg);
+    void resultReady(int index, bool success, const QString &filePath, const QString &errorMsg);
 
 private:
     int m_index;
@@ -41,21 +42,22 @@ private:
     QString m_savePath;
 };
 
+// --- UPLOAD WORKER (Kolejka wysyłania) ---
 class UploadWorker : public QObject {
     Q_OBJECT
 public:
     explicit UploadWorker(QString serverUrl, int timeout, QObject *parent = nullptr);
 
 public slots:
-    void addJob(const UploadJob& job);
+    void addJob(const UploadJob &job); // Poprawiono na const &
     void processNext();
 
 signals:
     void uploadStarted(int camIndex);
-    void uploadFinished(int camIndex, bool success, QString message);
+    void uploadFinished(int camIndex, bool success, const QString &message); // Poprawiono na const &
 
 private:
-    void sendRequest(const UploadJob &job);
+    void sendRequest(const UploadJob &job); // Poprawiono na const &
 
     QNetworkAccessManager *manager;
     QQueue<UploadJob> m_queue;
@@ -72,30 +74,32 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
-protected:
+    protected:
     void keyPressEvent(QKeyEvent *event) override;
 
-private slots:
-    void startScanProcess();
+    private slots:
+        // GUI
+        void startScanProcess();
     void openSettings();
+    void openTestImageDialog(); // <--- NOWY SLOT (Ctrl+4)
     void handleSerialScan();
-    void updateClock() const;
+    void updateClock();
 
-    void onCameraFinished(int index, bool success, const QString& filePath, const QString& errorMsg);
+    // Wątki
+    void onCameraFinished(int index, bool success, const QString &filePath, const QString &errorMsg);
     void onWorkerUploadStarted(int camIndex);
-    void onWorkerUploadFinished(int camIndex, bool success, const QString& message);
+    void onWorkerUploadFinished(int camIndex, bool success, const QString &message);
 
-signals:
-    void requestUpload(UploadJob job);
+    signals:
+        void requestUpload(const UploadJob &job);
 
-private:
+    private:
     void setupUi();
     void setupStyles();
     void configureScanner();
-    static void ensureTmpFolderExists();
-    static QLabel* createCameraLabel(const QString &text);
+    void ensureTmpFolderExists();
+    QLabel* createCameraLabel(const QString &text);
 
-    // Status (0=Idle, 1=Sending, 2=OK, 3=Error)
     void drawStatusOnImage(int camIndex, const QString &filePath, int status, const QString &msg = "");
 
     QWidget *centralWidget;
@@ -107,7 +111,8 @@ private:
     std::vector<QLabel*> camDisplays;
 
     SettingDialog *settingsDialog;
-    QShortcut *secretShortcut;
+    QShortcut *secretShortcut; // Ctrl+5
+    QShortcut *testShortcut;   // <--- NOWY SKRÓT Ctrl+4
     QShortcut *exitShortcut;
     QTimer *clockTimer;
 
@@ -116,6 +121,9 @@ private:
     QString currentPalletCode;
 
     QString lastImagePaths[5];
+
+    // Mapa nadpisań: ID Kamery -> Ścieżka do pliku
+    QMap<int, QString> staticOverrides; // <--- NOWA ZMIENNA
 
     QThreadPool *cameraPool;
     QThread *uploadThread;
