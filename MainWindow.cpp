@@ -1,5 +1,4 @@
 #include "MainWindow.h"
-#include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QDateTime>
 #include <QGraphicsDropShadowEffect>
@@ -15,37 +14,225 @@
 #include <QDebug>
 #include <QPainter>
 #include <QEventLoop>
+#include <utility>
+
+CameraWorker::CameraWorker(int index, QString url, int protocolMode, int rotation,
+                           QString user, QString pass, QString savePath, QObject *parent)
+    : QObject(parent), m_index(index), m_url(std::move(std::move(url))), m_protocol(protocolMode),
+      m_rotation(rotation), m_user(std::move(user)), m_pass(std::move(pass)), m_savePath(std::move(savePath))
+{
+    setAutoDelete(true);
+}
+
+void CameraWorker::run() {
+    qDebug() << "CAM_WORKER" << m_index << ": Started. Protocol:" << (m_protocol == 0 ? "HTTP" : "RTSP");
+
+    QImage capturedImg;
+    bool success = false;
+    QString errorMsg = "";
+
+    if (m_protocol == 0) {
+        QNetworkAccessManager netMan;
+        QNetworkRequest request(m_url);
+
+        QString concatenated = m_user + ":" + m_pass;
+        QByteArray data = concatenated.toLocal8Bit().toBase64();
+        request.setRawHeader("Authorization", "Basic " + data);
+        request.setTransferTimeout(5000); // 5s timeout
+
+        QEventLoop loop;
+        QObject::connect(&netMan, &QNetworkAccessManager::finished, &loop, &QEventLoop::quit);
+        QNetworkReply *reply = netMan.get(request);
+        loop.exec();
+
+        if (reply->error() == QNetworkReply::NoError) {
+            QByteArray imgData = reply->readAll();
+            if (capturedImg.loadFromData(imgData)) success = true;
+            else errorMsg = "Bad Image Data";
+        } else {
+            errorMsg = "HTTP: " + reply->errorString();
+        }
+        reply->deleteLater();
+    }
+    else {
+        cv::VideoCapture cap;
+        cap.open(m_url.toStdString(), cv::CAP_FFMPEG);
+
+        if (cap.isOpened()) {
+            cv::Mat frame;
+            for(int k=0; k<15; k++) {
+                if(cap.read(frame) && !frame.empty()) {
+                    cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
+                    capturedImg = QImage(static_cast<const uchar *>(frame.data), frame.cols, frame.rows, frame.step, QImage::Format_RGB888).copy();
+                    success = true;
+                    break;
+                }
+            }
+            if(!success) errorMsg = "Decode Fail";
+            cap.release();
+        } else {
+            errorMsg = "Connect Fail";
+        }
+    }
+
+    if (success && !capturedImg.isNull()) {
+        if (m_rotation != 0) {
+            QTransform trans;
+            trans.rotate(m_rotation == 270 ? -90 : m_rotation);
+            capturedImg = capturedImg.transformed(trans);
+        }
+
+        if (!capturedImg.save(m_savePath, "JPG", 85)) {
+            success = false;
+            errorMsg = "Disk Write Error";
+        }
+    }
+
+    emit resultReady(m_index, success, m_savePath, errorMsg);
+    qDebug() << "CAM_WORKER" << m_index << ": Finished. Success:" << success;
+}
+
+UploadWorker::UploadWorker(QString serverUrl, int timeout, QObject *parent)
+    : QObject(parent), m_serverUrl(std::move(serverUrl)), m_timeout(timeout), m_isUploading(false)
+{
+    manager = new QNetworkAccessManager(this);
+}
+
+void UploadWorker::addJob(const UploadJob& job) {
+    m_queue.enqueue(job);
+    processNext();
+}
+
+void UploadWorker::processNext() {
+    if (m_isUploading || m_queue.isEmpty()) return;
+
+    m_isUploading = true;
+    UploadJob job = m_queue.head();
+    sendRequest(job);
+}
+
+void UploadWorker::sendRequest(const UploadJob &job) {
+    emit uploadStarted(job.camIndex);
+
+    QUrl url(m_serverUrl);
+    QUrlQuery query;
+    query.addQueryItem("sulabel", job.palletCode);
+    query.addQueryItem("cam", QString::number(job.camIndex));
+    query.addQueryItem("gate", "2");
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setTransferTimeout(m_timeout * 1000);
+
+    // 2. Przygotowanie pliku i multipart
+    auto *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+    QHttpPart imagePart;
+    imagePart.setHeader(QNetworkRequest::ContentTypeHeader, QVariant("image/jpeg"));
+    imagePart.setHeader(QNetworkRequest::ContentDispositionHeader,
+        QVariant(QString("form-data; name=\"photo\"; filename=\"%1\"").arg(QFileInfo(job.filePath).fileName())));
+
+    auto *file = new QFile(job.filePath);
+    if (!file->open(QIODevice::ReadOnly)) {
+        qCritical() << "UPLOAD_WORKER: File open error:" << job.filePath;
+        delete multiPart; delete file;
+        m_isUploading = false;
+        m_queue.dequeue();
+        emit uploadFinished(job.camIndex, false, "File Error");
+        processNext();
+        return;
+    }
+
+    qint64 fileSize = file->size();
+    imagePart.setBodyDevice(file);
+    file->setParent(multiPart);
+    multiPart->append(imagePart);
+
+    // --- LOGOWANIE WYSYŁANYCH DANYCH (REQUEST) ---
+    qDebug() << "\n>>> [HTTP REQUEST OUT] >>>";
+    qDebug() << "Method: POST";
+    qDebug() << "URL:" << url.toString();
+    qDebug() << "Payload: Multipart Form-Data";
+    qDebug() << "File:" << job.filePath << "| Size:" << fileSize << "bytes";
+    // Logujemy nagłówki, które ustawiliśmy ręcznie (reszta jest dodawana automatycznie przez QNAM)
+    qDebug() << "Known Headers:" << request.rawHeaderList();
+    qDebug() << ">>> ------------------------ >>>";
+
+    // 3. Wysłanie żądania
+    QEventLoop loop;
+    QObject::connect(manager, &QNetworkAccessManager::finished, &loop, &QEventLoop::quit);
+    QNetworkReply *reply = manager->post(request, multiPart);
+    multiPart->setParent(reply);
+
+    loop.exec();
+
+    bool success = (reply->error() == QNetworkReply::NoError);
+    int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    QByteArray responseBody = reply->readAll();
+    QString msg = success ? "OK" : reply->errorString();
+
+    qDebug() << "\n<<< [HTTP RESPONSE IN] <<<";
+    qDebug() << "Status Code:" << statusCode;
+
+    // Logowanie wszystkich nagłówków otrzymanych od serwera PHP/Apache/Nginx
+    qDebug() << "Headers:";
+    const auto headerList = reply->rawHeaderList();
+    for (const auto &head : headerList) {
+        qDebug() << " -" << head << ":" << reply->rawHeader(head);
+    }
+
+    qDebug() << "BODY (Payload):" << responseBody;
+    qDebug() << "<<< ---------------------- <<<";
+
+    reply->deleteLater();
+
+    m_queue.dequeue();
+    m_isUploading = false;
+    emit uploadFinished(job.camIndex, success, msg);
+    processNext();
+}
+// gui thread
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     this->setObjectName("mainWindow");
+    qDebug() << "APP: Starting...";
 
-    qDebug() << "APP: Starting application...";
+    // Wymuszenie tcp aby sie nie pierdolilo
     qputenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp");
+    // wywalenie gstreamera bo linux tego nie obsluguje, ale na windzie to normalnie dziala
+    qputenv("OPENCV_VIDEOIO_PRIORITY_GSTREAMER", "0");
 
     settingsDialog = new SettingDialog(this);
 
-    int w = settingsDialog->getAppWidth();
-    int h = settingsDialog->getAppHeight();
-    bool fs = settingsDialog->isFullScreen();
+    const int w = settingsDialog->getAppWidth();
+    const int h = settingsDialog->getAppHeight();
+    const bool fs = settingsDialog->isFullScreen();
 
     if (fs) {
         this->setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
         this->showFullScreen();
-        qDebug() << "APP: Fullscreen Kiosk Mode.";
     } else {
         this->setWindowFlags(Qt::Window);
         this->resize(w, h);
         this->show();
-        qDebug() << "APP: Window Mode:" << w << "x" << h;
     }
 
+    // port seriala do scanera
     serialScanner = new QSerialPort(this);
-    netManager = new QNetworkAccessManager(this);
-    isUploading = false;
 
-    animationTimer = new QTimer(this);
-    connect(animationTimer, &QTimer::timeout, this, &MainWindow::updateUploadAnimation);
-    spinnerAngle = 0;
+    // pool do kamerek
+    cameraPool = QThreadPool::globalInstance();
+    cameraPool->setMaxThreadCount(8);
+
+    uploadThread = new QThread(this);
+    uploadWorker = new UploadWorker(settingsDialog->getServerUrl(), settingsDialog->getUploadTimeout());
+    uploadWorker->moveToThread(uploadThread);
+
+    connect(uploadThread, &QThread::finished, uploadWorker, &QObject::deleteLater);
+    connect(this, &MainWindow::requestUpload, uploadWorker, &UploadWorker::addJob);
+    connect(uploadWorker, &UploadWorker::uploadStarted, this, &MainWindow::onWorkerUploadStarted);
+    connect(uploadWorker, &UploadWorker::uploadFinished, this, &MainWindow::onWorkerUploadFinished);
+
+    uploadThread->start();
 
     ensureTmpFolderExists();
     setupStyles();
@@ -54,15 +241,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     secretShortcut = new QShortcut(QKeySequence("Ctrl+5"), this);
     connect(secretShortcut, &QShortcut::activated, this, &MainWindow::openSettings);
 
-    QShortcut *exitShortcut = new QShortcut(QKeySequence("Ctrl+Q"), this);
+    auto *exitShortcut = new QShortcut(QKeySequence("Ctrl+Q"), this);
     connect(exitShortcut, &QShortcut::activated, qApp, &QApplication::quit);
 
-    reloadCameras();
     configureScanner();
 }
 
 MainWindow::~MainWindow() {
-    for(auto &cap : captures) if(cap.isOpened()) cap.release();
+    qDebug() << "APP: Closing...";
+    if(uploadThread->isRunning()) {
+        uploadThread->quit();
+        uploadThread->wait();
+    }
     if(serialScanner->isOpen()) serialScanner->close();
 }
 
@@ -73,67 +263,39 @@ void MainWindow::ensureTmpFolderExists() {
 
 void MainWindow::setupStyles() {
     this->setStyleSheet(R"(
-        QWidget#centralOverlay {
-            border-image: url(:/img/bg.png) 0 0 0 0 stretch stretch;
-        }
-        QWidget#mainPanel {
-            background-color: white;
-            border-radius: 0px;
-        }
-        QLabel#headerTitle {
-            font-family: 'Roboto Condensed', sans-serif;
-            font-size: 34px;
-            font-weight: 700;
-            color: #001122;
-            letter-spacing: 1px;
-        }
-        QLabel#dateLabel {
-            font-family: 'Roboto', sans-serif;
-            font-size: 26px;
-            font-weight: 600;
-            color: #444;
-            margin-right: 20px;
-        }
-        QLabel.cameraDisplay {
-            background-color: #111;
-            border: 1px solid #aaa;
-            color: #888;
-            font-weight: bold;
-        }
+        QWidget#centralOverlay { border-image: url(:/img/bg.png) 0 0 0 0 stretch stretch; }
+        QWidget#mainPanel { background-color: white; border-radius: 0px; }
+        QLabel#headerTitle { font-family: 'Roboto Condensed'; font-size: 34px; font-weight: 700; color: #001122; letter-spacing: 1px; }
+        QLabel#dateLabel { font-family: 'Roboto'; font-size: 26px; font-weight: 600; color: #444; margin-right: 20px; }
+        QLabel.cameraDisplay { background-color: #222; border: 2px solid #ccc; color: #888; font-weight: bold; }
     )");
 }
 
 QLabel* MainWindow::createCameraLabel(const QString &text) {
-    QLabel *l = new QLabel(text);
+    auto *l = new QLabel(text);
     l->setProperty("class", "cameraDisplay");
     l->setAlignment(Qt::AlignCenter);
+    l->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     l->setScaledContents(false);
-    l->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    l->setMinimumHeight(200);
     return l;
 }
 
 void MainWindow::setupUi() {
     centralWidget = new QWidget(this);
     centralWidget->setObjectName("centralOverlay");
-
-    QVBoxLayout *mainLayout = new QVBoxLayout(centralWidget);
-    mainLayout->setContentsMargins(50, 50, 50, 50);
+    auto *mainLayout = new QVBoxLayout(centralWidget);
+    mainLayout->setContentsMargins(40, 40, 40, 40);
 
     mainPanel = new QWidget(this);
     mainPanel->setObjectName("mainPanel");
-
-    QGraphicsDropShadowEffect *shadow = new QGraphicsDropShadowEffect();
-    shadow->setBlurRadius(40);
-    shadow->setColor(QColor(0, 0, 0, 120));
-    shadow->setOffset(0, 10);
+    auto *shadow = new QGraphicsDropShadowEffect();
+    shadow->setBlurRadius(40); shadow->setColor(QColor(0, 0, 0, 120)); shadow->setOffset(0, 10);
     mainPanel->setGraphicsEffect(shadow);
 
-    QVBoxLayout *panelLayout = new QVBoxLayout(mainPanel);
-    panelLayout->setContentsMargins(25, 25, 25, 25);
-    panelLayout->setSpacing(15);
+    auto *panelLayout = new QVBoxLayout(mainPanel);
+    panelLayout->setContentsMargins(20, 20, 20, 20); panelLayout->setSpacing(15);
 
-    QHBoxLayout *headerLayout = new QHBoxLayout();
+    auto *headerLayout = new QHBoxLayout();
     logoLabel = new QLabel();
     QPixmap logoPix(":/img/logo.png");
     if(!logoPix.isNull()) logoLabel->setPixmap(logoPix.scaledToHeight(60, Qt::SmoothTransformation));
@@ -146,290 +308,141 @@ void MainWindow::setupUi() {
     dateLabel = new QLabel(this);
     dateLabel->setObjectName("dateLabel");
     clockTimer = new QTimer(this);
-    connect(clockTimer, &QTimer::timeout, [this](){
-        dateLabel->setText(QDateTime::currentDateTime().toString("HH:mm:ss"));
-    });
+    connect(clockTimer, &QTimer::timeout, this, &MainWindow::updateClock);
     clockTimer->start(1000);
 
-    headerLayout->addWidget(logoLabel);
-    headerLayout->addStretch();
-    headerLayout->addWidget(headerTitle);
-    headerLayout->addStretch();
+    headerLayout->addWidget(logoLabel); headerLayout->addStretch();
+    headerLayout->addWidget(headerTitle); headerLayout->addStretch();
     headerLayout->addWidget(dateLabel);
 
-    cam1_TopLeft = createCameraLabel("Kamera 1");
-    cam4_TopRight = createCameraLabel("Kamera 4");
-    cam0_BotLeft = createCameraLabel("Kamera 0");
-    cam2_BotMid = createCameraLabel("Kamera 2");
-    cam3_BotRight = createCameraLabel("Kamera 3");
-
+    cam1_TopLeft = createCameraLabel("Kamera 1"); cam4_TopRight = createCameraLabel("Kamera 4");
+    cam0_BotLeft = createCameraLabel("Kamera 0"); cam2_BotMid = createCameraLabel("Kamera 2"); cam3_BotRight = createCameraLabel("Kamera 3");
     camDisplays = { cam0_BotLeft, cam1_TopLeft, cam2_BotMid, cam3_BotRight, cam4_TopRight };
 
-    QHBoxLayout *topRow = new QHBoxLayout();
-    topRow->setSpacing(15);
-    topRow->addWidget(cam1_TopLeft, 1);
-    topRow->addWidget(cam4_TopRight, 1);
+    auto *topRow = new QHBoxLayout(); topRow->setSpacing(15);
+    topRow->addWidget(cam1_TopLeft, 1); topRow->addWidget(cam4_TopRight, 1);
+    auto *botRow = new QHBoxLayout(); botRow->setSpacing(15);
+    botRow->addWidget(cam0_BotLeft, 1); botRow->addWidget(cam2_BotMid, 1); botRow->addWidget(cam3_BotRight, 1);
 
-    QHBoxLayout *botRow = new QHBoxLayout();
-    botRow->setSpacing(15);
-    botRow->addWidget(cam0_BotLeft, 1);
-    botRow->addWidget(cam2_BotMid, 1);
-    botRow->addWidget(cam3_BotRight, 1);
-
-    panelLayout->addLayout(headerLayout);
-    panelLayout->addLayout(topRow, 1);
-    panelLayout->addLayout(botRow, 1);
-
-    mainLayout->addWidget(mainPanel);
-    setCentralWidget(centralWidget);
+    panelLayout->addLayout(headerLayout); panelLayout->addLayout(topRow, 1); panelLayout->addLayout(botRow, 1);
+    mainLayout->addWidget(mainPanel); setCentralWidget(centralWidget);
 }
 
-void MainWindow::drawStatusOnImage(int camIndex, const QPixmap &basePix, QString text, QColor overlayColor, bool isAnimated) {
-    if (camIndex < 0 || camIndex >= camDisplays.size()) return;
-    if (basePix.isNull()) return;
+void MainWindow::updateClock() const {
+    dateLabel->setText(QDateTime::currentDateTime().toString("HH:mm:ss"));
+}
 
-    QPixmap tempPix = basePix;
-    QPainter painter(&tempPix);
+void MainWindow::drawStatusOnImage(int camIndex, const QString &filePath, int status, const QString &msg) {
+    // Statusy 0 - brak, 1 - sending, 2 - OK, 3 - error
+    if (camIndex < 0 || camIndex >= camDisplays.size()) return;
+    QPixmap pix(filePath);
+    if (pix.isNull()) return;
+
+    QPainter painter(&pix);
     painter.setRenderHint(QPainter::Antialiasing);
 
-    int w = tempPix.width();
-    int h = tempPix.height();
+    if (status > 0) {
+        QColor color;
+        QString text = msg;
+        if (status == 1) { color = QColor(0, 120, 215); if(text.isEmpty()) text="WYSYŁANIE..."; }
+        else if (status == 2) { color = QColor(40, 167, 69); if(text.isEmpty()) text="WYSŁANO \u2714"; } // ✔
+        else { color = QColor(220, 53, 69); if(text.isEmpty()) text="BŁĄD \u274C"; } // ❌
 
-    if (isAnimated) {
-        painter.fillRect(tempPix.rect(), QColor(0, 0, 0, 100));
-        int size = qMin(w, h) / 4;
-        int cx = w / 2;
-        int cy = h / 2;
-        painter.setPen(QPen(Qt::white, 6, Qt::SolidLine, Qt::RoundCap));
-        painter.translate(cx, cy);
-        painter.rotate(spinnerAngle);
-        painter.drawArc(-size/2, -size/2, size, size, 0, 270 * 16);
-        painter.resetTransform();
-    }
+        int w = pix.width();
+        int h = pix.height();
+        int barHeight = qMax(40, h/12);
 
-    if (!text.isEmpty()) {
+        painter.fillRect(QRect(0, 0, w, barHeight), color);
+
         painter.setPen(Qt::white);
         QFont font = painter.font();
-        font.setPointSize(20);
+        font.setPixelSize(barHeight * 0.6);
         font.setBold(true);
         painter.setFont(font);
 
-        if (!isAnimated) {
-            QRect barRect(0, 0, w, 50);
-            painter.fillRect(barRect, overlayColor);
-            painter.drawText(barRect, Qt::AlignCenter, text);
-        } else {
-            QRect textRect(0, (h/2) + (qMin(w,h)/8) + 10, w, 40);
-            painter.drawText(textRect, Qt::AlignCenter, text);
-        }
+        painter.drawText(QRect(0, 0, w, barHeight), Qt::AlignCenter, text);
     }
-
     painter.end();
 
-    QSize labelSize = camDisplays[camIndex]->size();
-    if (!labelSize.isEmpty()) {
-        camDisplays[camIndex]->setPixmap(tempPix.scaled(
-            labelSize,
-            Qt::KeepAspectRatio,
-            Qt::SmoothTransformation
-        ));
+    QLabel *lbl = camDisplays[camIndex];
+    if (!lbl->size().isEmpty()) {
+        lbl->setPixmap(pix.scaled(lbl->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
     }
 }
 
-void MainWindow::updateUploadAnimation() {
-    spinnerAngle = (spinnerAngle + 15) % 360;
-    drawStatusOnImage(currentUploadCamIndex, currentBasePixmap, "WYSYŁANIE...", QColor(0,0,0,0), true);
-}
-
-void MainWindow::captureSnapshot() {
-    qDebug() << "SNAPSHOT: Starting sequence. Pallet:" << currentPalletCode;
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-
+void MainWindow::startScanProcess() {
+    qDebug() << "SCAN: New Code -> " << currentPalletCode;
     headerTitle->setText("PALETA: " + currentPalletCode);
-    QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd-HHmm");
 
+    QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd-HHmm");
     QString user = settingsDialog->getGlobalUser();
     QString pass = settingsDialog->getGlobalPass();
     QString urlTemplate = settingsDialog->getUrlTemplate();
-    int mode = settingsDialog->getProtocolMode(); // 0=HTTP, 1=RTSP
+    int mode = settingsDialog->getProtocolMode();
 
     for(int i=0; i<5; i++) {
         QString ip = settingsDialog->getCameraIp(i);
-        if (ip.isEmpty() || ip == "0") continue;
+        if (ip.trimmed().isEmpty() || ip == "0") continue;
 
-        QImage capturedImg;
-        bool success = false;
+        QString url = urlTemplate;
+        // szablony do urli
+        url.replace("%1", user);
+        url.replace("%2", pass);
+        url.replace("%3", ip);
 
-        // --- MODE 0: HTTP (WGET EMULATION) ---
-        if (mode == 0) {
-            // Zamień %3 na IP (bo %1 i %2 idą w headerze dla HTTP)
-            QString url = urlTemplate;
-            url.replace("%3", ip); // Prosta podmiana, bezpieczna
+        QString filename = QString("%1_%2_%3.jpg").arg(currentPalletCode, timestamp).arg(i);
+        const QString savePath = QDir("tmp").filePath(filename);
+        const int rotation = settingsDialog->getCameraRotation(i);
 
-            qDebug() << "FETCH (HTTP):" << url;
+        camDisplays[i]->setText("POBIERANIE...");
 
-            // Retry logic (2 próby)
-            for(int attempt = 1; attempt <= 2; attempt++) {
-                QNetworkRequest request(url);
+        auto *worker = new CameraWorker(i, url, mode, rotation, user, pass, savePath);
+        connect(worker, &CameraWorker::resultReady, this, &MainWindow::onCameraFinished);
 
-                // AUTH HEADER
-                QString concatenated = user + ":" + pass;
-                QByteArray data = concatenated.toLocal8Bit().toBase64();
-                QString headerData = "Basic " + data;
-                request.setRawHeader("Authorization", headerData.toLocal8Bit());
-                request.setTransferTimeout(5000);
-
-                QNetworkReply *reply = netManager->get(request);
-                QEventLoop loop;
-                connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-                loop.exec();
-
-                if (reply->error() == QNetworkReply::NoError) {
-                    QByteArray imgData = reply->readAll();
-                    if (capturedImg.loadFromData(imgData)) {
-                        success = true;
-                        reply->deleteLater();
-                        break;
-                    }
-                } else {
-                    qDebug() << "HTTP Err:" << reply->errorString();
-                }
-                reply->deleteLater();
-            }
-        }
-        else {
-            QString url = urlTemplate.arg(user, pass, ip);
-            qDebug() << "FETCH (RTSP):" << ip;
-
-            if(!captures[i].isOpened()) captures[i].open(url.toStdString());
-
-            if(captures[i].isOpened()) {
-                cv::Mat frame;
-                for(int k=0; k<15; k++) {
-                    if(captures[i].read(frame) && !frame.empty()) {
-                        cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
-                        capturedImg = QImage((const uchar*)frame.data, frame.cols, frame.rows, frame.step, QImage::Format_RGB888).copy();
-                        success = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if(success && !capturedImg.isNull()) {
-            int rotation = settingsDialog->getCameraRotation(i);
-            if (rotation != 0) {
-                QTransform trans;
-                trans.rotate(rotation);
-                capturedImg = capturedImg.transformed(trans);
-            }
-
-            QString filename = QString("%1_%2_%3.jpg").arg(currentPalletCode).arg(timestamp).arg(i);
-            QString fullPath = QDir("tmp").filePath(filename);
-
-            if(capturedImg.save(fullPath, "JPG", 90)) {
-                QSize labelSize = camDisplays[i]->size();
-                if(!labelSize.isEmpty()) {
-                    QPixmap pix = QPixmap::fromImage(capturedImg);
-                    camDisplays[i]->setPixmap(pix.scaled(labelSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-                }
-
-                UploadJob job;
-                job.filePath = fullPath;
-                job.palletCode = currentPalletCode;
-                job.camIndex = i;
-                uploadQueue.enqueue(job);
-            }
-        } else {
-            camDisplays[i]->setText("BŁĄD OBRAZU\n(Sprawdź IP/Hasło)");
-        }
-
-        QCoreApplication::processEvents();
+        cameraPool->start(worker);
     }
-
-    QApplication::restoreOverrideCursor();
-    if (!uploadQueue.isEmpty() && !isUploading) startNextUpload();
 }
 
-void MainWindow::startNextUpload() {
-    if (uploadQueue.isEmpty()) { isUploading = false; return; }
-    isUploading = true;
-    UploadJob job = uploadQueue.head();
+void MainWindow::onCameraFinished(int index, bool success, const QString& filePath, const QString& errorMsg) {
+    if (success) {
+        lastImagePaths[index] = filePath;
+        drawStatusOnImage(index, filePath, 0);
 
-    qDebug() << "UPLOAD: Starting" << job.filePath;
-    currentUploadCamIndex = job.camIndex;
-    currentBasePixmap.load(job.filePath);
-    spinnerAngle = 0;
-    animationTimer->start(33);
+        UploadJob job;
+        job.filePath = filePath;
+        job.palletCode = currentPalletCode;
+        job.camIndex = index;
 
-    QString serverUrl = settingsDialog->getServerUrl();
-    int timeoutSec = settingsDialog->getUploadTimeout();
+        emit requestUpload(job);
 
-    QUrl url(serverUrl);
-    QUrlQuery query;
-    query.addQueryItem("sulabel", job.palletCode);
-    query.addQueryItem("cam", QString::number(job.camIndex));
-    query.addQueryItem("gate", "2");
-    url.setQuery(query);
-
-    QNetworkRequest request(url);
-    request.setTransferTimeout(timeoutSec * 1000);
-
-    QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-    QHttpPart imagePart;
-    imagePart.setHeader(QNetworkRequest::ContentTypeHeader, QVariant("image/jpeg"));
-    imagePart.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant(QString("form-data; name=\"photo\"; filename=\"%1\"").arg(QFileInfo(job.filePath).fileName())));
-
-    QFile *file = new QFile(job.filePath);
-    if (!file->open(QIODevice::ReadOnly)) {
-        animationTimer->stop();
-        drawStatusOnImage(job.camIndex, currentBasePixmap, "BŁĄD PLIKU", Qt::red);
-        delete multiPart; delete file;
-        uploadQueue.dequeue(); startNextUpload(); return;
-    }
-
-    imagePart.setBodyDevice(file);
-    file->setParent(multiPart);
-    multiPart->append(imagePart);
-
-    QNetworkReply *reply = netManager->post(request, multiPart);
-    multiPart->setParent(reply);
-
-    connect(reply, &QNetworkReply::finished, [this, reply](){
-        this->onUploadFinished(reply);
-    });
-}
-
-void MainWindow::onUploadFinished(QNetworkReply *reply) {
-    animationTimer->stop();
-    if(uploadQueue.isEmpty()) { reply->deleteLater(); return; }
-    UploadJob job = uploadQueue.head();
-
-    if (reply->error() == QNetworkReply::NoError) {
-        qDebug() << "UPLOAD: Success." << reply->readAll();
-        QSize labelSize = camDisplays[job.camIndex]->size();
-        if(!labelSize.isEmpty() && !currentBasePixmap.isNull()) {
-            camDisplays[job.camIndex]->setPixmap(currentBasePixmap.scaled(labelSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        }
-        if(!uploadQueue.isEmpty()) uploadQueue.dequeue();
     } else {
-        qCritical() << "UPLOAD: Failed." << reply->errorString();
-        drawStatusOnImage(job.camIndex, currentBasePixmap, "BŁĄD WYSYŁANIA", Qt::red);
-        if(!uploadQueue.isEmpty()) uploadQueue.dequeue();
+        qWarning() << "MAIN: Cam" << index << "Failed:" << errorMsg;
+        camDisplays[index]->setText("BŁĄD:\n" + errorMsg);
     }
-    reply->deleteLater();
-    startNextUpload();
+}
+
+void MainWindow::onWorkerUploadStarted(const int camIndex) {
+    if (!lastImagePaths[camIndex].isEmpty()) {
+        drawStatusOnImage(camIndex, lastImagePaths[camIndex], 1);
+    }
+}
+
+void MainWindow::onWorkerUploadFinished(const int camIndex, const bool success, const QString& message) {
+    if (!lastImagePaths[camIndex].isEmpty()) {
+        drawStatusOnImage(camIndex, lastImagePaths[camIndex], success ? 2 : 3);
+    }
 }
 
 void MainWindow::handleSerialScan() {
-    QByteArray data = serialScanner->readAll();
+    const QByteArray data = serialScanner->readAll();
     serialBuffer.append(data);
     if(serialBuffer.contains('\r') || serialBuffer.contains('\n')) {
-        QString code = QString::fromUtf8(serialBuffer).trimmed();
+        const QString code = QString::fromUtf8(serialBuffer).trimmed();
         serialBuffer.clear();
         if(!code.isEmpty()) {
+            qDebug() << "SERIAL: Input ->" << code;
             currentPalletCode = code;
-            captureSnapshot();
+            startScanProcess();
         }
     }
 }
@@ -439,8 +452,9 @@ void MainWindow::keyPressEvent(QKeyEvent *event) {
     if(settingsDialog->getSelectedScannerPort() == "KEYBOARD") {
         if(event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
             if(!keyBuffer.isEmpty()) {
+                qDebug() << "KBD: Input ->" << keyBuffer;
                 currentPalletCode = keyBuffer;
-                captureSnapshot();
+                startScanProcess();
                 keyBuffer.clear();
             }
         } else {
@@ -456,16 +470,19 @@ void MainWindow::configureScanner() {
     if(serialScanner->isOpen()) serialScanner->close();
     QString portName = settingsDialog->getSelectedScannerPort();
 
-    if(portName == "KEYBOARD") {
-        headerTitle->setText("ZESKANUJ KOD PALETY");
-    } else {
+    qDebug() << "SCANNER: Configuring..." << portName;
+
+    if(portName == "KEYBOARD") headerTitle->setText("ZESKANUJ KOD PALETY");
+    else {
         serialScanner->setPortName(portName);
         serialScanner->setBaudRate(QSerialPort::Baud9600);
         if(serialScanner->open(QIODevice::ReadOnly)) {
             connect(serialScanner, &QSerialPort::readyRead, this, &MainWindow::handleSerialScan);
             headerTitle->setText("GOTOWY (" + portName + ")");
+            qDebug() << "SCANNER: Serial Port Open";
         } else {
-            headerTitle->setText("BŁĄD: " + portName);
+            headerTitle->setText("BŁĄD SKANERA");
+            qCritical() << "SCANNER: Failed to open port";
         }
     }
 }
@@ -473,15 +490,31 @@ void MainWindow::configureScanner() {
 void MainWindow::openSettings() {
     bool wasFullScreen = this->isFullScreen();
     if(wasFullScreen) this->showNormal();
+
     if(settingsDialog->exec() == QDialog::Accepted) {
-        reloadCameras();
+        qDebug() << "SETTINGS: Saved. Restarting subsystems...";
+
+        disconnect(uploadThread, &QThread::finished, uploadWorker, &QObject::deleteLater);
+
+        if(uploadThread->isRunning()) {
+            uploadThread->quit();
+            uploadThread->wait();
+        }
+
+        delete uploadWorker;
+
+        uploadWorker = new UploadWorker(settingsDialog->getServerUrl(), settingsDialog->getUploadTimeout());
+        uploadWorker->moveToThread(uploadThread);
+
+        connect(uploadThread, &QThread::finished, uploadWorker, &QObject::deleteLater);
+        connect(this, &MainWindow::requestUpload, uploadWorker, &UploadWorker::addJob);
+        connect(uploadWorker, &UploadWorker::uploadStarted, this, &MainWindow::onWorkerUploadStarted);
+        connect(uploadWorker, &UploadWorker::uploadFinished, this, &MainWindow::onWorkerUploadFinished);
+
+        uploadThread->start();
+
         configureScanner();
     }
-    if(wasFullScreen) this->showFullScreen();
-}
 
-void MainWindow::reloadCameras() {
-    for(auto &cap : captures) if(cap.isOpened()) cap.release();
-    captures.clear();
-    captures.resize(5);
+    if(wasFullScreen) this->showFullScreen();
 }
