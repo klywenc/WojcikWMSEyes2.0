@@ -6,15 +6,12 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-# --- KONFIGURACJA DLA WINDOWS (Ignorowana na Linuxie) ---
 if(WIN32)
     set(CMAKE_PREFIX_PATH "C:/Qt/6.10.1/mingw_64")
     set(OpenCV_DIR "C:/tools/opencvmingw/x64/mingw/lib")
 endif()
 
-# --- SZUKANIE BIBLIOTEK ---
-# Na Fedorze find_package znajdzie to automatycznie w /usr/lib
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets SerialPort Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets SerialPort Network Concurrent)
 find_package(OpenCV REQUIRED)
 
 add_executable(MagazynSkaner
@@ -32,14 +29,17 @@ target_link_libraries(MagazynSkaner PRIVATE
         Qt6::Widgets
         Qt6::SerialPort
         Qt6::Network
+        Qt6::Concurrent
         ${OpenCV_LIBS}
         pq
 )
 
-# --- DEPLOYMENT (Tylko dla Windows) ---
+if(UNIX AND NOT APPLE)
+    target_link_libraries(MagazynSkaner PRIVATE pq)
+endif()
+
 if(WIN32)
     add_custom_command(TARGET MagazynSkaner POST_BUILD
-            COMMENT "Uruchamianie windeployqt..."
             COMMAND "${CMAKE_PREFIX_PATH}/bin/windeployqt.exe"
             "$<TARGET_FILE:MagazynSkaner>"
             --dir "$<TARGET_FILE_DIR:MagazynSkaner>"
