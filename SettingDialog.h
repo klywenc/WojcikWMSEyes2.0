@@ -14,12 +14,12 @@ class SettingDialog : public QDialog {
 public:
     explicit SettingDialog(QWidget *parent = nullptr);
 
-    QString getCameraIp(int index);
+    static QString getCameraIp(int index);
     int getCameraRotation(int index);
     QString getGlobalUser();
     QString getGlobalPass();
     QString getUrlTemplate();
-    int getProtocolMode(); // 0 = HTTP, 1 = RTSP
+    int getProtocolMode();
 
     QString getSelectedScannerPort();
     int getAppWidth();
@@ -30,12 +30,13 @@ public:
 
 public slots:
     void saveSettings();
-    void refreshPorts();
-    void onProtocolChanged(int index);
+    void refreshPorts() const;
+    void onProtocolChanged(int index) const;
 
 private:
     void setupUi();
-    QSettings* getSettings();
+
+    static QSettings* getSettings();
 
     struct CameraRow {
         QLineEdit *ipEdit;
