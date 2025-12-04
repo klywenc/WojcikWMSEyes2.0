@@ -15,8 +15,8 @@
 #include <QDebug>
 #include <QPainter>
 #include <QEventLoop>
-#include <QFileDialog>  // Naprawa błedu
-#include <QInputDialog> // Naprawa błędu
+#include <QFileDialog>  
+#include <QInputDialog> 
 
 // =========================================================
 // CAMERA WORKER
@@ -548,3 +548,4 @@ void MainWindow::openSettings() {
 
     if(wasFullScreen) this->showFullScreen();
 }
+
